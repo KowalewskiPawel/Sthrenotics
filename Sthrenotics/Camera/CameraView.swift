@@ -5,6 +5,7 @@
 //  Created by Pawel Kowalewski on 09/05/2025.
 //
 
+
 import SwiftUI
 import AVFoundation // Import AVFoundation for AVCaptureSession type
 
@@ -13,11 +14,12 @@ struct CameraView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            ZStack { // Use ZStack to layer the preview and the processed frame/overlays
-                // Display the live camera preview
+            ZStack { // Use ZStack to layer the preview and overlays
+                // Display ONLY the live camera preview
                 if let captureSession = viewModel.captureSession {
                     CameraPreviewView(session: captureSession)
                         .frame(width: geometry.size.width, height: geometry.size.height)
+                        .clipped()
                 } else {
                     // Handle the case where the session is not available
                     ContentUnavailableView(
@@ -28,21 +30,9 @@ struct CameraView: View {
                     .frame(width: geometry.size.width, height: geometry.size.height)
                 }
 
-                // Optionally, display the processed frame or draw overlays on top
-                // For now, let's keep displaying the processed image for demonstration
-                // You might remove this if you prefer drawing directly on the preview
-                if let processedImage = viewModel.currentFrame {
-                     Image(decorative: processedImage, scale: 1)
-                         .resizable()
-                         .aspectRatio(contentMode: .fill)
-                         .frame(width: geometry.size.width, height: geometry.size.height)
-                         .clipped()
-                         .scaleEffect(x: -1, y: 1) // Mirror horizontally if needed
-                         .opacity(0.5) // Example: make it semi-transparent to see the live feed behind
-                }
-
-                // You would add drawing logic here based on viewModel.bodyParts
-                // For example, using a Canvas or a custom Shape view to draw keypoints.
+                // REMOVED: The duplicate processed frame overlay that was causing the double vision
+                // The pose estimation overlays (skeleton, coordinates) should be drawn on top
+                // via the parent view (PoseAnalysisView) rather than duplicating the camera feed
             }
         }
     }

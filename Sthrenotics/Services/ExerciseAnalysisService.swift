@@ -7,34 +7,83 @@
 
 
 import Foundation
+import Vision
 
 class ExerciseAnalysisService: ObservableObject {
     @Published var isAnalyzing = false
     @Published var lastResult: ExerciseAnalysisResult?
+    @Published var currentRepCount = 0
+    @Published var liveFormScore: Double = 10.0
+    @Published var liveFormFeedback = ""
     
     private var recordedFrames: [CoordinateFrame] = []
     private let openAIService = OpenAIService()
+    private var lastAnalysisTime = Date()
+    private let analysisInterval: TimeInterval = 2.0 // Analyze every 2 seconds for live feedback
+    
+    // Real-time analysis
+    private var recentFrames: [CoordinateFrame] = []
+    private let maxRecentFrames = 20 // Keep last 20 frames for live analysis
     
     func startNewSession() {
         recordedFrames.removeAll()
+        recentFrames.removeAll()
         lastResult = nil
+        currentRepCount = 0
+        liveFormScore = 10.0
+        liveFormFeedback = ""
+        lastAnalysisTime = Date()
     }
     
     func addFrame(from poseEstimator: PoseEstimator) {
-//        let timestamp = Date().timeIntervalSinceReferenceDate
-//        let frame = CoordinateFrame(
-//            timestamp: timestamp,
-//            bodyParts: poseEstimator.bodyParts.mapValues { bodyPart in
-//                CoordinateData(
-//                    x: Float(bodyPart.location.x),
-//                    y: Float(bodyPart.location.y),
-//                    confidence: bodyPart.confidence
-//                )
-//            }
-//        )
-//        recordedFrames.append(frame)
+        let timestamp = Date().timeIntervalSinceReferenceDate
+        
+        // Convert HumanBodyPoseObservation.PoseJointName to String
+        let bodyPartsStringDict = poseEstimator.bodyParts.reduce(into: [String: CoordinateData]()) { result, item in
+            result[item.key.rawValue] = CoordinateData(
+                x: Float(item.value.location.x),
+                y: Float(item.value.location.y),
+                confidence: item.value.confidence
+            )
+        }
+        
+        let frame = CoordinateFrame(
+            timestamp: timestamp,
+            bodyParts: bodyPartsStringDict
+        )
+        
+        recordedFrames.append(frame)
+        recentFrames.append(frame)
+        
+        // Keep only recent frames for live analysis
+        if recentFrames.count > maxRecentFrames {
+            recentFrames.removeFirst()
+        }
+        
+        // Perform live analysis periodically
+        let now = Date()
+        if now.timeIntervalSince(lastAnalysisTime) >= analysisInterval && recentFrames.count >= 10 {
+            lastAnalysisTime = now
+            Task {
+                await performLiveAnalysis()
+            }
+        }
     }
     
+    // Live analysis for real-time feedback
+    private func performLiveAnalysis() async {
+        guard !recentFrames.isEmpty else { return }
+        
+        let coordinateText = formatCoordinatesForAPI(frames: recentFrames, isLiveAnalysis: true)
+        let result = await openAIService.analyzeLiveExercise(coordinateData: coordinateText)
+        
+        DispatchQueue.main.async {
+            self.liveFormScore = result.formScore
+            self.liveFormFeedback = result.feedback
+        }
+    }
+    
+    // Full session analysis
     func analyzeExercise(exercise: String) async {
         guard !recordedFrames.isEmpty else { return }
         
@@ -42,7 +91,7 @@ class ExerciseAnalysisService: ObservableObject {
             self.isAnalyzing = true
         }
         
-        let coordinateText = formatCoordinatesForAPI(frames: recordedFrames)
+        let coordinateText = formatCoordinatesForAPI(frames: recordedFrames, isLiveAnalysis: false)
         let result = await openAIService.analyzeExercise(
             exercise: exercise,
             coordinateData: coordinateText
@@ -51,49 +100,49 @@ class ExerciseAnalysisService: ObservableObject {
         DispatchQueue.main.async {
             self.isAnalyzing = false
             self.lastResult = result
+            self.currentRepCount = result.repCount
         }
     }
     
-    private func formatCoordinatesForAPI(frames: [CoordinateFrame]) -> String {
-        // Intelligent sampling: more frames during movement, fewer during static holds
-        let sampledFrames = intelligentSample(frames: frames)
+    private func formatCoordinatesForAPI(frames: [CoordinateFrame], isLiveAnalysis: Bool) -> String {
+        // For live analysis, use all recent frames
+        // For full analysis, use intelligent sampling
+        let framesToProcess = isLiveAnalysis ? frames : intelligentSample(frames: frames)
         
-        return sampledFrames.compactMap { frame in
-            // Only include joints with reasonable confidence (like your original code)
+        return framesToProcess.compactMap { frame in
+            // Only include joints with reasonable confidence
             let validJoints = frame.bodyParts.compactMap { (joint, data) -> String? in
                 guard data.confidence > 0.3 else { return nil }
-                return "\(abbreviateJoint(joint)):\(String(format: "%.3f", data.x)),\(String(format: "%.3f", data.y)),\(String(format: "%.2f", data.confidence))"
+                return "\(abbreviateJoint(joint)):\(String(format: "%.3f", data.x)),\(String(format: "%.3f", data.y))"
             }
             
             guard !validJoints.isEmpty else { return nil }
             
-            let timestamp = frame.timestamp - frames.first!.timestamp // Relative timestamp
+            let timestamp = frame.timestamp - frames.first!.timestamp
             return "t:\(String(format: "%.1f", timestamp))|\(validJoints.joined(separator: "|"))"
         }.joined(separator: "\n")
     }
     
     private func intelligentSample(frames: [CoordinateFrame]) -> [CoordinateFrame] {
-        guard frames.count > 30 else { return frames } // Return all if short sequence
+        guard frames.count > 50 else { return frames }
         
         var sampledFrames: [CoordinateFrame] = []
         var lastSampledFrame: CoordinateFrame?
         
-        for frame in frames {
+        for (index, frame) in frames.enumerated() {
             if let lastFrame = lastSampledFrame {
-                // Calculate movement between frames
                 let movement = calculateMovement(from: lastFrame, to: frame)
                 
-                // Sample more frequently during high movement, less during static holds
-                let shouldSample = movement > 0.05 ? // High movement threshold
-                    sampledFrames.count % 2 == 0 : // Every 2nd frame
-                    sampledFrames.count % 5 == 0   // Every 5th frame
+                // Sample more during movement, less during static holds
+                let shouldSample = movement > 0.03 ?
+                    index % 2 == 0 :  // Every 2nd frame during movement
+                    index % 6 == 0    // Every 6th frame during static holds
                 
                 if shouldSample {
                     sampledFrames.append(frame)
                     lastSampledFrame = frame
                 }
             } else {
-                // Always include first frame
                 sampledFrames.append(frame)
                 lastSampledFrame = frame
             }
@@ -108,8 +157,7 @@ class ExerciseAnalysisService: ObservableObject {
     }
     
     private func calculateMovement(from frame1: CoordinateFrame, to frame2: CoordinateFrame) -> Float {
-        // Calculate average movement of key joints
-        let keyJoints = ["leftWrist", "rightWrist", "leftShoulder", "rightShoulder"]
+        let keyJoints = ["leftWrist", "rightWrist", "leftShoulder", "rightShoulder", "leftHip", "rightHip"]
         var totalMovement: Float = 0
         var jointCount = 0
         
@@ -129,15 +177,14 @@ class ExerciseAnalysisService: ObservableObject {
     }
     
     private func abbreviateJoint(_ joint: String) -> String {
-        // Abbreviate joint names to save tokens (like your original efficient approach)
         let abbreviations: [String: String] = [
             "leftWrist": "lw", "rightWrist": "rw",
             "leftElbow": "le", "rightElbow": "re",
             "leftShoulder": "ls", "rightShoulder": "rs",
             "neck": "n", "leftHip": "lh", "rightHip": "rh",
             "leftKnee": "lk", "rightKnee": "rk",
-            "leftAnkle": "la", "rightAnkle": "ra", 
-            "root": "rt"
+            "leftAnkle": "la", "rightAnkle": "ra",
+            "root": "rt", "nose": "ns"
         ]
         return abbreviations[joint] ?? joint
     }

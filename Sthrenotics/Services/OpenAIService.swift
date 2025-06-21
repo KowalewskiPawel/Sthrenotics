@@ -9,67 +9,139 @@
 import Foundation
 
 class OpenAIService {
-    // Replace with your actual OpenAI API key
-    private let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? "YOUR_OPENAI_API_KEY"
+    // Use GPT-3.5-turbo for best cost/performance ratio
+    //ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ??
+    private let apiKey = ""
     private let baseURL = "https://api.openai.com/v1/chat/completions"
     
+    // Cache for exercise-specific prompts to reduce token usage
+    private var exercisePrompts: [String: String] = [:]
+    
+    init() {
+        setupExercisePrompts()
+    }
+    
+    // Pre-defined efficient prompts for common exercises
+    private func setupExercisePrompts() {
+        exercisePrompts = [
+            "push-ups": """
+            PUSH-UP ANALYSIS:
+            Key patterns: shoulders-wrists aligned, straight body line, 90° elbow bend at bottom
+            Count: full up-down cycles only
+            Form errors: sagging hips, flared elbows, partial range
+            """,
+            
+            "squats": """
+            SQUAT ANALYSIS:
+            Key patterns: knees track over toes, hip hinge, thighs parallel at bottom
+            Count: full up-down cycles only
+            Form errors: knee valgus, forward lean, partial depth
+            """,
+            
+            "burpees": """
+            BURPEE ANALYSIS:
+            Key patterns: squat→plank→push-up→jump sequence
+            Count: complete 4-phase cycles only
+            Form errors: missing phases, poor plank position, weak jump
+            """,
+            
+            "lunges": """
+            LUNGE ANALYSIS:
+            Key patterns: 90° angles both knees, vertical torso, controlled descent
+            Count: complete down-up cycles per leg
+            Form errors: knee drift, torso lean, short range
+            """,
+            
+            "plank": """
+            PLANK ANALYSIS:
+            Key patterns: straight line head-to-heels, shoulders over wrists
+            Count: hold duration in seconds
+            Form errors: sagging hips, raised hips, head drop
+            """,
+            
+            "jumping-jacks": """
+            JUMPING JACK ANALYSIS:
+            Key patterns: arms overhead, feet wide, coordinated movement
+            Count: complete open-close cycles
+            Form errors: partial arm raise, narrow stance, poor timing
+            """
+        ]
+    }
+    
+    // Main analysis function for complete sessions
     func analyzeExercise(exercise: String, coordinateData: String) async -> ExerciseAnalysisResult {
-        // Enhanced prompt with better context and instructions
+        let exerciseKey = exercise.lowercased().replacingOccurrences(of: " ", with: "-")
+        let exercisePrompt = exercisePrompts[exerciseKey] ?? generateGenericPrompt(for: exercise)
+        
         let prompt = """
-        EXERCISE ANALYSIS - \(exercise.uppercased())
+        \(exercisePrompt)
         
-        You are analyzing \(exercise) form using body pose coordinates from computer vision.
-        
-        COORDINATE FORMAT:
-        - Each line: t:timestamp|joint:x,y,confidence
-        - Coordinates normalized 0-1 (origin top-left)
-        - Only joints with confidence > 0.3 included
-        - Camera facing user (mirror view)
-        
-        EXERCISE SEQUENCE:
+        COORDINATES (t:time|joint:x,y format, 0-1 normalized):
         \(coordinateData)
         
-        ANALYSIS REQUIREMENTS:
-        - Count ONLY complete repetitions with acceptable form
-        - Rate form 1-10 (7+ = good, 5-6 = needs work, <5 = poor)
-        - Focus on key \(exercise) movement patterns
-        - Provide specific, actionable feedback
-        
-        RESPOND WITH VALID JSON ONLY:
-        {
-          "repCount": 0,
-          "formScore": 0.0,
-          "feedback": "Concise overall assessment and main suggestion",
-          "issues": ["specific issue 1", "specific issue 2"]
-        }
+        JSON RESPONSE ONLY:
+        {"repCount":0,"formScore":0.0,"feedback":"brief","issues":["specific"]}
         """
         
+        return await performAnalysis(prompt: prompt, maxTokens: 200)
+    }
+    
+    // Lightweight live analysis for real-time feedback
+    func analyzeLiveExercise(coordinateData: String) async -> ExerciseAnalysisResult {
+        let prompt = """
+        LIVE FORM CHECK (last 2 seconds):
+        \(coordinateData)
+        
+        Rate form 1-10, give brief feedback. JSON only:
+        {"formScore":0.0,"feedback":"brief tip"}
+        """
+        
+        return await performAnalysis(prompt: prompt, maxTokens: 50)
+    }
+    
+    // Flexible analysis for any exercise type
+    func analyzeCustomExercise(exerciseName: String, exerciseDescription: String, coordinateData: String) async -> ExerciseAnalysisResult {
+        let prompt = """
+        CUSTOM EXERCISE: \(exerciseName)
+        Description: \(exerciseDescription)
+        
+        COORDINATES:
+        \(coordinateData)
+        
+        Analyze movement patterns, count reps, assess form. JSON only:
+        {"repCount":0,"formScore":0.0,"feedback":"assessment","issues":["specifics"]}
+        """
+        
+        return await performAnalysis(prompt: prompt, maxTokens: 150)
+    }
+    
+    private func performAnalysis(prompt: String, maxTokens: Int) async -> ExerciseAnalysisResult {
         let messages = [
             [
-                "role": "system", 
-                "content": "You are Sthrenotics AI - an expert exercise form analyst. Analyze pose coordinate data and provide precise feedback. Always respond with valid JSON only, no additional text."
+                "role": "system",
+                "content": "You are Sthrenotics AI, an expert exercise form analyst. Always respond with valid JSON only."
             ],
             [
-                "role": "user", 
+                "role": "user",
                 "content": prompt
             ]
         ]
         
         do {
-            let result = try await generateChatCompletion(messages: messages)
+            let result = try await generateChatCompletion(messages: messages, maxTokens: maxTokens)
             return parseAnalysisResult(from: result)
         } catch {
             print("Sthrenotics OpenAI Error: \(error)")
             return ExerciseAnalysisResult(
                 repCount: 0,
-                formScore: 0.0,
-                feedback: "Analysis unavailable. Check connection and API key.",
+                formScore: 5.0,
+                feedback: "Analysis temporarily unavailable",
                 issues: ["Connection Error"]
             )
         }
     }
     
-    private func generateChatCompletion(messages: [[String: String]]) async throws -> String {
+    private func generateChatCompletion(messages: [[String: String]], maxTokens: Int) async throws -> String {
         guard let url = URL(string: baseURL) else {
             throw URLError(.badURL)
         }
@@ -78,23 +150,25 @@ class OpenAIService {
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 30.0
+        request.timeoutInterval = 15.0 // Faster timeout for live analysis
         
         let requestBody: [String: Any] = [
-            "model": "gpt-3.5-turbo",
+            "model": "gpt-3.5-turbo", // Cheapest and fastest option
             "messages": messages,
-            "max_tokens": 300,
+            "max_tokens": maxTokens,
             "temperature": 0.1, // Low temperature for consistent analysis
-            "top_p": 0.9
+            "top_p": 0.9,
+            "frequency_penalty": 0.1,
+            "presence_penalty": 0.1
         ]
         
         request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
         
         let (data, response) = try await URLSession.shared.data(for: request)
         
-        // Check HTTP response
         if let httpResponse = response as? HTTPURLResponse {
             guard 200...299 ~= httpResponse.statusCode else {
+                print("HTTP Error: \(httpResponse.statusCode)")
                 throw URLError(.badServerResponse)
             }
         }
@@ -111,7 +185,6 @@ class OpenAIService {
     }
     
     private func parseAnalysisResult(from jsonString: String) -> ExerciseAnalysisResult {
-        // Clean up the JSON string (remove any markdown formatting)
         let cleanJson = jsonString
             .replacingOccurrences(of: "```json", with: "")
             .replacingOccurrences(of: "```", with: "")
@@ -121,14 +194,14 @@ class OpenAIService {
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return ExerciseAnalysisResult(
                 repCount: 0,
-                formScore: 0.0,
+                formScore: 5.0,
                 feedback: "Unable to parse AI response",
                 issues: ["Response Format Error"]
             )
         }
         
         let repCount = json["repCount"] as? Int ?? 0
-        let formScore = json["formScore"] as? Double ?? 0.0
+        let formScore = json["formScore"] as? Double ?? 5.0
         let feedback = json["feedback"] as? String ?? "No feedback available"
         let issues = json["issues"] as? [String] ?? []
         
@@ -139,4 +212,23 @@ class OpenAIService {
             issues: issues
         )
     }
+    
+    private func generateGenericPrompt(for exercise: String) -> String {
+        return """
+        \(exercise.uppercased()) ANALYSIS:
+        Analyze movement patterns for this exercise
+        Count complete repetitions only
+        Assess form quality and provide feedback
+        """
+    }
+}
+
+// Extended result struct for live analysis
+extension ExerciseAnalysisResult {
+    static let placeholder = ExerciseAnalysisResult(
+        repCount: 0,
+        formScore: 10.0,
+        feedback: "Starting analysis...",
+        issues: []
+    )
 }
