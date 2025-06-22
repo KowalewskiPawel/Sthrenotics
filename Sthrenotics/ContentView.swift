@@ -2,7 +2,7 @@
 //  ContentView.swift
 //  Sthrenotics
 //
-//  Simple working version using existing PoseEstimator
+//  Simplified working version with proper threading
 //
 
 import SwiftUI
@@ -12,21 +12,21 @@ struct ContentView: View {
     @StateObject private var poseEstimator = PoseEstimator()
     @StateObject private var analysisService = ExerciseAnalysisService()
     @State private var isRecording = false
-    @State private var selectedExercise = "Push-ups"
+    @State private var selectedExercise = "Sitting Posture"
     @State private var showingDebugInfo = false
-    @State private var cameraPosition: AVCaptureDevice.Position = .front
     
-    let exercises = [
-        "Push-ups", "Squats", "Burpees", "Lunges", "Plank",
-        "Jumping Jacks", "Mountain Climbers", "Sit-ups", "Sitting Posture"
-    ]
+    let exercises = ["Push-ups", "Squats", "Sitting Posture", "Plank"]
     
     var body: some View {
         GeometryReader { geometry in
             ZStack {
-                // Camera View with pose analysis
-                PoseAnalysisView()
+                // Camera View - PASS THE SAME POSE ESTIMATOR INSTANCE
+                CameraViewWrapper(poseEstimator: poseEstimator)
                     .ignoresSafeArea()
+                
+                // Skeleton overlay using the SAME pose estimator
+                FreePostureStickFigureView(poseEstimator: poseEstimator, size: geometry.size)
+                    .frame(width: geometry.size.width, height: geometry.size.height)
                 
                 // UI Overlay
                 VStack {
@@ -40,7 +40,7 @@ struct ContentView: View {
                         liveAnalysisView
                     }
                     
-                    // Debug Info Overlay
+                    // Debug Info
                     if showingDebugInfo {
                         debugInfoView
                     }
@@ -57,12 +57,15 @@ struct ContentView: View {
             }
         }
         .onReceive(poseEstimator.$bodyParts) { bodyParts in
-            if isRecording {
-                print("🔍 DEBUG: ContentView received \(bodyParts.count) body parts, passing to analysis service")
+            print("🔔 ContentView: Received \(bodyParts.count) body parts")
+            
+            if isRecording && !bodyParts.isEmpty {
+                print("🎯 Adding frame to analysis service")
                 analysisService.addFrame(from: poseEstimator)
-            } else {
-                print("🔍 DEBUG: ContentView received body parts but not recording")
             }
+        }
+        .onAppear {
+            print("🔔 ContentView appeared")
         }
     }
     
@@ -94,16 +97,6 @@ struct ContentView: View {
             .background(Color.black.opacity(0.7))
             .foregroundColor(.white)
             .cornerRadius(8)
-            
-            // Camera Toggle
-            Button(action: toggleCamera) {
-                Image(systemName: "camera.rotate")
-                    .font(.title2)
-                    .foregroundColor(.white)
-                    .padding(12)
-                    .background(Color.black.opacity(0.7))
-                    .cornerRadius(8)
-            }
             
             // Debug Toggle
             Button(action: { showingDebugInfo.toggle() }) {
@@ -156,9 +149,9 @@ struct ContentView: View {
                         .foregroundColor(.white.opacity(0.7))
                 }
                 
-                // Joint detection
+                // Joint detection (using the new simplified property)
                 VStack {
-                    Text("\(poseEstimator.bodyParts.count)")
+                    Text("\(poseEstimator.jointCount)")
                         .font(.title)
                         .fontWeight(.bold)
                         .foregroundColor(.blue)
@@ -168,13 +161,23 @@ struct ContentView: View {
                 }
             }
             
-            // Live feedback
-            if !analysisService.liveFormFeedback.isEmpty {
-                Text(analysisService.liveFormFeedback)
-                    .font(.subheadline)
-                    .foregroundColor(.white)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
+            // Live feedback - make it more prominent
+            VStack {
+                if !analysisService.liveFormFeedback.isEmpty {
+                    Text("💡 \(analysisService.liveFormFeedback)")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .foregroundColor(.white)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+                        .padding(.vertical, 8)
+                        .background(Color.black.opacity(0.6))
+                        .cornerRadius(8)
+                } else {
+                    Text("Waiting for analysis...")
+                        .font(.caption)
+                        .foregroundColor(.white.opacity(0.6))
+                }
             }
         }
         .padding()
@@ -222,7 +225,7 @@ struct ContentView: View {
         .padding(.bottom, 40)
     }
     
-    // MARK: - Debug Info View (Simplified)
+    // MARK: - Debug Info (Simplified)
     
     private var debugInfoView: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -232,49 +235,34 @@ struct ContentView: View {
             
             VStack(alignment: .leading, spacing: 4) {
                 // API Key Status
-                apiKeyStatusView
+                let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? "Not Set"
+                Text("API Key: \(apiKey == "Not Set" ? "❌ Missing" : "✅ Set")")
+                    .foregroundColor(apiKey == "Not Set" ? .red : .green)
                 
-                // Basic Pose Detection
-                Text("Detected Joints: \(poseEstimator.bodyParts.count)")
-                    .foregroundColor(poseEstimator.bodyParts.isEmpty ? .red : .green)
+                // Joint Detection Status
+                Text("Detected Joints: \(poseEstimator.jointCount)")
+                    .foregroundColor(poseEstimator.jointCount > 0 ? .green : .red)
                 
-                // Show some detected joints if any
-                if !poseEstimator.bodyParts.isEmpty {
-                    Text("Sample Joints:")
-                        .foregroundColor(.green)
-                    let sampleJoints = Array(poseEstimator.bodyParts.prefix(3))
-                    ForEach(sampleJoints, id: \.key) { joint, bodyPart in
-                        Text("  \(joint.rawValue): \(String(format: "%.2f", bodyPart.confidence))")
-                            .font(.caption2)
-                    }
-                }
+                Text("Recording: \(isRecording ? "✅ Yes" : "❌ No")")
                 
-                // Analysis Status
                 Text("Analysis Service: \(analysisService.isAnalyzing ? "🔄 Active" : "⏸️ Idle")")
                 
                 Text("Live Score: \(String(format: "%.1f", analysisService.liveFormScore))")
                 
-                if !analysisService.liveFormFeedback.isEmpty {
-                    Text("Live Feedback: \(analysisService.liveFormFeedback)")
-                        .font(.caption)
-                }
+                Text("Live Feedback: '\(analysisService.liveFormFeedback)'")
+                    .font(.caption)
+                    .foregroundColor(analysisService.liveFormFeedback.isEmpty ? .red : .green)
                 
-                // Action Buttons
-                VStack(spacing: 6) {
-                    Button("🧪 Test OpenAI") {
-                        testOpenAIConnection()
-                    }
-                    .buttonStyle(DebugButtonStyle(color: .orange))
+                // Test Buttons
+                HStack(spacing: 8) {
+                    Button("🧪 Test") { testSimple() }
+                        .buttonStyle(DebugButtonStyle(color: .orange))
                     
-                    Button("🔴 Force Analysis") {
-                        forceLiveAnalysis()
-                    }
-                    .buttonStyle(DebugButtonStyle(color: .red))
-                    
-                    Button("📷 Check Camera") {
-                        checkCameraPermissions()
-                    }
-                    .buttonStyle(DebugButtonStyle(color: .blue))
+                    Button("🔴 Live") { forceLiveAnalysis() }
+                        .buttonStyle(DebugButtonStyle(color: .red))
+                        
+                    Button("📊 Full") { forceFullAnalysis() }
+                        .buttonStyle(DebugButtonStyle(color: .blue))
                 }
             }
             .font(.caption)
@@ -289,57 +277,60 @@ struct ContentView: View {
         .padding()
     }
     
-    private var apiKeyStatusView: some View {
-        let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? "Not Set"
-        return Text("API Key: \(apiKey == "Not Set" ? "❌ Missing" : "✅ Set (\(apiKey.count) chars)")")
-            .foregroundColor(apiKey == "Not Set" ? .red : .green)
-    }
-    
     // MARK: - Helper Functions
     
-    private func forceLiveAnalysis() {
-        print("🔴 DEBUG: Force live analysis button pressed")
-        print("🔴 DEBUG: Current body parts count: \(poseEstimator.bodyParts.count)")
-        
-        // Manually add current frame to analysis service
-        analysisService.addFrame(from: poseEstimator)
-        
-        // Force immediate analysis
+    private func testSimple() {
         Task {
-            await analysisService.performLiveAnalysis()
-        }
-    }
-    
-    private func testOpenAIConnection() {
-        Task {
-            let testData = "t:0.0|ls:0.3,0.4|rs:0.7,0.4|n:0.5,0.2"
-            let openAIService = OpenAIService()
+            print("🧪 Simple Test - Current joints: \(poseEstimator.jointCount)")
             
-            print("🧪 Testing OpenAI with sample data...")
-            let result = await openAIService.analyzeExercise(exercise: "Test", coordinateData: testData)
-            print("🧪 Test result: \(result)")
+            // Test with current data if available
+            if poseEstimator.jointCount > 0 {
+                print("🧪 Testing with real pose data")
+                analysisService.addFrame(from: poseEstimator)
+                await analysisService.performLiveAnalysis()
+            } else {
+                print("🧪 No joints detected - testing with sample data")
+                let openAIService = OpenAIService()
+                let testData = "t:0.0|ls:0.3,0.4|rs:0.7,0.4|n:0.5,0.2"
+                let result = await openAIService.analyzeExercise(exercise: "Test", coordinateData: testData)
+                print("🧪 Result: \(result)")
+            }
         }
     }
     
-    private func checkCameraPermissions() {
-        let status = AVCaptureDevice.authorizationStatus(for: .video)
-        print("🎥 Camera permission status: \(status.rawValue)")
-        
-        switch status {
-        case .authorized:
-            print("✅ Camera access authorized")
-        case .denied:
-            print("❌ Camera access denied")
-        case .restricted:
-            print("⚠️ Camera access restricted")
-        case .notDetermined:
-            print("❓ Camera access not determined")
-            AVCaptureDevice.requestAccess(for: .video) { granted in
-                print("🎥 Camera access granted: \(granted)")
+    private func forceLiveAnalysis() {
+        print("🔴 Force LIVE analysis - joints: \(poseEstimator.jointCount)")
+        if poseEstimator.jointCount > 0 {
+            analysisService.addFrame(from: poseEstimator)
+            Task {
+                print("🔴 Starting immediate live analysis...")
+                await analysisService.performLiveAnalysis()
+                print("🔴 Live analysis completed")
             }
-        @unknown default:
-            print("❓ Unknown camera status")
+        } else {
+            print("🔴 No joints detected for live analysis")
         }
+    }
+    
+    private func forceFullAnalysis() {
+        print("📊 Force FULL analysis - joints: \(poseEstimator.jointCount)")
+        if poseEstimator.jointCount > 0 {
+            // Add a few frames for full analysis
+            for _ in 0..<3 {
+                analysisService.addFrame(from: poseEstimator)
+            }
+            Task {
+                print("📊 Starting full exercise analysis...")
+                await analysisService.analyzeExercise(exercise: selectedExercise)
+                print("📊 Full analysis completed")
+            }
+        } else {
+            print("📊 No joints detected for full analysis")
+        }
+    }
+    
+    private func forceAnalysis() {
+        forceLiveAnalysis() // Just call the live analysis for backward compatibility
     }
     
     // MARK: - Computed Properties
@@ -366,29 +357,18 @@ struct ContentView: View {
             isRecording = true
         }
     }
-    
-    private func toggleCamera() {
-        let newPosition: AVCaptureDevice.Position = cameraPosition == .front ? .back : .front
-        cameraPosition = newPosition
-        
-        // Post notification for camera switch
-        NotificationCenter.default.post(name: .switchCamera, object: newPosition)
-        print("Sthrenotics: Camera toggle requested - \(newPosition == .front ? "front" : "back")")
-    }
 }
-
-// MARK: - Custom Button Style for Debug Buttons
 
 struct DebugButtonStyle: ButtonStyle {
     let color: Color
     
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
             .background(color.opacity(0.8))
             .foregroundColor(.white)
-            .cornerRadius(6)
+            .cornerRadius(4)
             .scaleEffect(configuration.isPressed ? 0.95 : 1.0)
     }
 }

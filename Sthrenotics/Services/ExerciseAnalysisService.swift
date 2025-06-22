@@ -41,19 +41,35 @@ class ExerciseAnalysisService: ObservableObject {
         // Debug: Print how many body parts we're getting
         print("🔍 DEBUG: Adding frame with \(poseEstimator.bodyParts.count) body parts")
         
-        // Convert HumanBodyPoseObservation.PoseJointName to String
-        let bodyPartsStringDict = poseEstimator.bodyParts.reduce(into: [String: CoordinateData]()) { result, item in
-            result[item.key.rawValue] = CoordinateData(
-                x: Float(item.value.location.x),
-                y: Float(item.value.location.y),
-                confidence: item.value.confidence
+        // Check if we actually have body parts
+        if poseEstimator.bodyParts.isEmpty {
+            print("⚠️ DEBUG: PoseEstimator has no body parts - skipping frame")
+            return
+        }
+        
+        // Convert HumanBodyPoseObservation.PoseJointName to String with detailed logging
+        var bodyPartsStringDict: [String: CoordinateData] = [:]
+        var validJointsCount = 0
+        
+        for (jointName, joint) in poseEstimator.bodyParts {
+            let coordinateData = CoordinateData(
+                x: Float(joint.location.x),
+                y: Float(joint.location.y),
+                confidence: joint.confidence
             )
             
+            bodyPartsStringDict[jointName.rawValue] = coordinateData
+            
             // Debug: Print each joint being added
-            if item.value.confidence > 0.3 {
-                print("  ✅ Joint \(item.key.rawValue): conf=\(String(format: "%.2f", item.value.confidence)) pos=(\(String(format: "%.3f", item.value.location.x)), \(String(format: "%.3f", item.value.location.y)))")
+            if joint.confidence > 0.1 {  // Lower threshold for debugging
+                print("  ✅ Joint \(jointName.rawValue): conf=\(String(format: "%.2f", joint.confidence)) pos=(\(String(format: "%.3f", joint.location.x)), \(String(format: "%.3f", joint.location.y)))")
+                validJointsCount += 1
+            } else {
+                print("  ❌ Joint \(jointName.rawValue): conf=\(String(format: "%.2f", joint.confidence)) - too low confidence")
             }
         }
+        
+        print("🔍 DEBUG: Total joints: \(poseEstimator.bodyParts.count), Valid joints (>0.1 conf): \(validJointsCount)")
         
         let frame = CoordinateFrame(
             timestamp: timestamp,
@@ -70,6 +86,15 @@ class ExerciseAnalysisService: ObservableObject {
             recentFrames.removeFirst()
         }
         
+        // Debug: Show what's in the most recent frame
+        if let lastFrame = recentFrames.last {
+            let validJoints = lastFrame.bodyParts.filter { $0.value.confidence > 0.3 }
+            print("🔍 DEBUG: Last frame has \(validJoints.count) joints with confidence > 0.3")
+            for (joint, data) in validJoints.prefix(5) {  // Show first 5 for brevity
+                print("    \(joint): \(String(format: "%.3f", data.x)), \(String(format: "%.3f", data.y)) (conf: \(String(format: "%.2f", data.confidence)))")
+            }
+        }
+        
         // Perform live analysis periodically
         let now = Date()
         if now.timeIntervalSince(lastAnalysisTime) >= analysisInterval && recentFrames.count >= 5 {
@@ -78,6 +103,8 @@ class ExerciseAnalysisService: ObservableObject {
             Task {
                 await performLiveAnalysis()
             }
+        } else {
+            print("🔍 DEBUG: Not triggering analysis - time since last: \(String(format: "%.1f", now.timeIntervalSince(lastAnalysisTime)))s, frames: \(recentFrames.count)")
         }
     }
     
@@ -99,14 +126,26 @@ class ExerciseAnalysisService: ObservableObject {
             print("🔍 DEBUG: Setting analyzing state to true")
         }
         
-        let result = await openAIService.analyzeLiveExercise(coordinateData: coordinateText)
-        
-        print("🔍 DEBUG: Live analysis result - Score: \(result.formScore), Feedback: \(result.feedback)")
-        
-        Task { @MainActor in
-            print("🔍 DEBUG: Updating UI with live analysis results")
-            self.liveFormScore = result.formScore
-            self.liveFormFeedback = result.feedback
+        do {
+            print("🔍 DEBUG: About to call OpenAI service...")
+            let result = await openAIService.analyzeLiveExercise(coordinateData: coordinateText)
+            print("🔍 DEBUG: OpenAI service returned: \(result)")
+            
+            Task { @MainActor in
+                print("🔍 DEBUG: Updating UI with live analysis results")
+                print("🔍 DEBUG: New form score: \(result.formScore)")
+                print("🔍 DEBUG: New feedback: \(result.feedback)")
+                
+                self.liveFormScore = result.formScore
+                self.liveFormFeedback = result.feedback
+                
+                print("🔍 DEBUG: UI properties updated successfully")
+            }
+        } catch {
+            print("❌ DEBUG: Error in live analysis: \(error)")
+            Task { @MainActor in
+                self.liveFormFeedback = "Analysis error: \(error.localizedDescription)"
+            }
         }
     }
     

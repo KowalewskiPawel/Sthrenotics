@@ -7,6 +7,13 @@
 
 import Foundation
 
+// String extension for repeated characters (for debug formatting)
+extension String {
+    static func * (left: String, right: Int) -> String {
+        return String(repeating: left, count: right)
+    }
+}
+
 class OpenAIService {
     private let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? "YOUR_OPENAI_API_KEY"
     private let baseURL = "https://api.openai.com/v1/chat/completions"
@@ -58,7 +65,11 @@ class OpenAIService {
         if debugMode {
             print("🔍 DEBUG: Starting analysis for exercise: \(exercise)")
             print("📊 DEBUG: Coordinate data length: \(coordinateData.count) characters")
-            print("📝 DEBUG: First 200 chars of data: \(String(coordinateData.prefix(200)))")
+            print("📝 DEBUG: Coordinate data preview (first 500 chars):")
+            print(String(coordinateData.prefix(500)))
+            if coordinateData.count > 500 {
+                print("... (truncated, total length: \(coordinateData.count))")
+            }
         }
         
         // Check if we have any coordinate data
@@ -88,7 +99,11 @@ class OpenAIService {
         """
         
         if debugMode {
-            print("📤 DEBUG: Sending prompt to OpenAI (length: \(prompt.count))")
+            print("📤 DEBUG: Full prompt being sent to OpenAI:")
+            print("=" * 30)
+            print(prompt)
+            print("=" * 30)
+            print("📤 DEBUG: Prompt length: \(prompt.count) characters")
         }
         
         return await performAnalysis(prompt: prompt, maxTokens: 200, isLiveAnalysis: false)
@@ -97,9 +112,14 @@ class OpenAIService {
     func analyzeLiveExercise(coordinateData: String) async -> ExerciseAnalysisResult {
         if debugMode {
             print("🔴 DEBUG: Live analysis - data length: \(coordinateData.count)")
+            print("🔴 DEBUG: Live coordinate data:")
+            print(coordinateData)
         }
         
         if coordinateData.isEmpty {
+            if debugMode {
+                print("🔴 DEBUG: Empty coordinate data for live analysis")
+            }
             return ExerciseAnalysisResult(
                 repCount: 0,
                 formScore: 5.0,
@@ -109,14 +129,33 @@ class OpenAIService {
         }
         
         let prompt = """
-        LIVE POSTURE CHECK (sitting position):
+        LIVE POSTURE CHECK (current position):
         \(coordinateData)
         
         Rate posture 1-10, give brief feedback. JSON only:
         {"formScore":7.0,"feedback":"Quick posture tip"}
         """
         
-        return await performAnalysis(prompt: prompt, maxTokens: 80, isLiveAnalysis: true)
+        if debugMode {
+            print("🔴 DEBUG: Live analysis prompt:")
+            print("=" * 20)
+            print(prompt)
+            print("=" * 20)
+        }
+        
+        do {
+            let result = await performAnalysis(prompt: prompt, maxTokens: 80, isLiveAnalysis: true)
+            print("🔴 DEBUG: Live analysis completed successfully: \(result)")
+            return result
+        } catch {
+            print("🔴 DEBUG: Live analysis failed with error: \(error)")
+            return ExerciseAnalysisResult(
+                repCount: 0,
+                formScore: 5.0,
+                feedback: "Connection error - check network",
+                issues: ["Network Error"]
+            )
+        }
     }
     
     private func performAnalysis(prompt: String, maxTokens: Int, isLiveAnalysis: Bool) async -> ExerciseAnalysisResult {
@@ -195,6 +234,22 @@ class OpenAIService {
             "top_p": 0.9
         ]
         
+        // 🔍 LOG THE FULL REQUEST
+        if debugMode {
+            print("=" * 50)
+            print("🌐 OPENAI REQUEST DEBUG")
+            print("=" * 50)
+            print("📤 URL: \(baseURL)")
+            print("📤 Method: POST")
+            print("📤 Headers: Authorization: Bearer \(String(apiKey.prefix(10)))..., Content-Type: application/json")
+            print("📤 Request Body:")
+            if let requestData = try? JSONSerialization.data(withJSONObject: requestBody),
+               let requestString = String(data: requestData, encoding: .utf8) {
+                print(requestString)
+            }
+            print("=" * 50)
+        }
+        
         request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
         
         if debugMode {
@@ -203,38 +258,61 @@ class OpenAIService {
         
         let (data, response) = try await URLSession.shared.data(for: request)
         
+        // 🔍 LOG THE FULL RESPONSE
+        if debugMode {
+            print("=" * 50)
+            print("📥 OPENAI RESPONSE DEBUG")
+            print("=" * 50)
+        }
+        
         if let httpResponse = response as? HTTPURLResponse {
             if debugMode {
-                print("📡 DEBUG: HTTP Status: \(httpResponse.statusCode)")
+                print("📡 HTTP Status: \(httpResponse.statusCode)")
+                print("📡 Response Headers: \(httpResponse.allHeaderFields)")
             }
             
             if !(200...299).contains(httpResponse.statusCode) {
                 let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
                 if debugMode {
-                    print("❌ DEBUG: HTTP Error Response: \(errorMessage)")
+                    print("❌ HTTP Error Response Body: \(errorMessage)")
+                    print("=" * 50)
                 }
                 throw URLError(.badServerResponse)
             }
         }
         
-        // Parse response
+        // Parse response and log it
+        let responseString = String(data: data, encoding: .utf8) ?? "Cannot decode response"
+        if debugMode {
+            print("📥 Raw Response Body:")
+            print(responseString)
+        }
+        
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             if debugMode {
-                let responseString = String(data: data, encoding: .utf8) ?? "Cannot decode response"
-                print("❌ DEBUG: Invalid JSON response: \(responseString)")
+                print("❌ Failed to parse JSON from response")
+                print("=" * 50)
             }
             throw URLError(.badServerResponse)
         }
         
         if debugMode {
-            print("📋 DEBUG: Full JSON response: \(json)")
+            print("📋 Parsed JSON Response:")
+            if let jsonData = try? JSONSerialization.data(withJSONObject: json, options: .prettyPrinted),
+               let prettyJson = String(data: jsonData, encoding: .utf8) {
+                print(prettyJson)
+            }
         }
         
         // Check for API errors
         if let error = json["error"] as? [String: Any] {
             let errorMessage = error["message"] as? String ?? "Unknown API error"
+            let errorType = error["type"] as? String ?? "unknown"
             if debugMode {
-                print("🚨 DEBUG: OpenAI API Error: \(errorMessage)")
+                print("🚨 OpenAI API Error:")
+                print("   Type: \(errorType)")
+                print("   Message: \(errorMessage)")
+                print("=" * 50)
             }
             throw NSError(domain: "OpenAIError", code: 1, userInfo: [NSLocalizedDescriptionKey: errorMessage])
         }
@@ -244,9 +322,20 @@ class OpenAIService {
               let message = firstChoice["message"] as? [String: Any],
               let content = message["content"] as? String else {
             if debugMode {
-                print("❌ DEBUG: Could not extract content from response")
+                print("❌ Could not extract content from response structure")
+                print("   Available keys in json: \(Array(json.keys))")
+                if let choices = json["choices"] as? [[String: Any]], let firstChoice = choices.first {
+                    print("   Available keys in first choice: \(Array(firstChoice.keys))")
+                }
+                print("=" * 50)
             }
             throw URLError(.badServerResponse)
+        }
+        
+        if debugMode {
+            print("✅ Extracted Content:")
+            print(content)
+            print("=" * 50)
         }
         
         return content.trimmingCharacters(in: .whitespacesAndNewlines)
