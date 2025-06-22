@@ -2,7 +2,7 @@
 //  ContentView.swift
 //  Sthrenotics
 //
-//  Created by Pawel Kowalewski on 19/06/2025.
+//  Simple working version using existing PoseEstimator
 //
 
 import SwiftUI
@@ -13,15 +13,12 @@ struct ContentView: View {
     @StateObject private var analysisService = ExerciseAnalysisService()
     @State private var isRecording = false
     @State private var selectedExercise = "Push-ups"
-    @State private var showCustomExercise = false
-    @State private var customExerciseName = ""
-    @State private var customExerciseDescription = ""
+    @State private var showingDebugInfo = false
+    @State private var cameraPosition: AVCaptureDevice.Position = .front
     
-    // Expanded exercise list
     let exercises = [
         "Push-ups", "Squats", "Burpees", "Lunges", "Plank",
-        "Jumping Jacks", "Mountain Climbers", "Sit-ups",
-        "Deadlifts", "Pull-ups", "Custom Exercise..."
+        "Jumping Jacks", "Mountain Climbers", "Sit-ups", "Sitting Posture"
     ]
     
     var body: some View {
@@ -43,6 +40,11 @@ struct ContentView: View {
                         liveAnalysisView
                     }
                     
+                    // Debug Info Overlay
+                    if showingDebugInfo {
+                        debugInfoView
+                    }
+                    
                     // Final Results
                     if let result = analysisService.lastResult {
                         AnalysisResultView(result: result)
@@ -54,17 +56,12 @@ struct ContentView: View {
                 }
             }
         }
-        .onReceive(poseEstimator.$bodyParts) { _ in
+        .onReceive(poseEstimator.$bodyParts) { bodyParts in
             if isRecording {
+                print("🔍 DEBUG: ContentView received \(bodyParts.count) body parts, passing to analysis service")
                 analysisService.addFrame(from: poseEstimator)
-            }
-        }
-        .sheet(isPresented: $showCustomExercise) {
-            customExerciseSheet
-        }
-        .onChange(of: selectedExercise) { newValue in
-            if newValue == "Custom Exercise..." {
-                showCustomExercise = true
+            } else {
+                print("🔍 DEBUG: ContentView received body parts but not recording")
             }
         }
     }
@@ -97,6 +94,26 @@ struct ContentView: View {
             .background(Color.black.opacity(0.7))
             .foregroundColor(.white)
             .cornerRadius(8)
+            
+            // Camera Toggle
+            Button(action: toggleCamera) {
+                Image(systemName: "camera.rotate")
+                    .font(.title2)
+                    .foregroundColor(.white)
+                    .padding(12)
+                    .background(Color.black.opacity(0.7))
+                    .cornerRadius(8)
+            }
+            
+            // Debug Toggle
+            Button(action: { showingDebugInfo.toggle() }) {
+                Image(systemName: "ladybug")
+                    .font(.title2)
+                    .foregroundColor(.white)
+                    .padding(12)
+                    .background(Color.purple.opacity(0.7))
+                    .cornerRadius(8)
+            }
         }
         .padding()
     }
@@ -109,7 +126,7 @@ struct ContentView: View {
                     .fill(Color.red)
                     .frame(width: 12, height: 12)
                     .blinking(duration: 0.8)
-                Text("Analyzing \(displayExerciseName)")
+                Text("Analyzing \(selectedExercise)")
                     .foregroundColor(.white)
                     .font(.headline)
                     .fontWeight(.medium)
@@ -205,64 +222,127 @@ struct ContentView: View {
         .padding(.bottom, 40)
     }
     
-    private var customExerciseSheet: some View {
-        NavigationView {
-            VStack(spacing: 20) {
-                Text("Define Custom Exercise")
-                    .font(.title2)
-                    .fontWeight(.bold)
-                    .padding(.top)
+    // MARK: - Debug Info View (Simplified)
+    
+    private var debugInfoView: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("🔍 Debug Information")
+                .font(.headline)
+                .foregroundColor(.yellow)
+            
+            VStack(alignment: .leading, spacing: 4) {
+                // API Key Status
+                apiKeyStatusView
                 
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Exercise Name")
-                        .font(.headline)
-                    TextField("e.g., Diamond Push-ups", text: $customExerciseName)
-                        .textFieldStyle(RoundedBorderTextFieldStyle())
-                }
+                // Basic Pose Detection
+                Text("Detected Joints: \(poseEstimator.bodyParts.count)")
+                    .foregroundColor(poseEstimator.bodyParts.isEmpty ? .red : .green)
                 
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Exercise Description")
-                        .font(.headline)
-                    TextField("Describe the movement pattern and key form points", text: $customExerciseDescription, axis: .vertical)
-                        .textFieldStyle(RoundedBorderTextFieldStyle())
-                        .lineLimit(3...6)
-                }
-                
-                Text("Example: 'Push-up variation with hands forming diamond shape, focuses on triceps, requires close hand position'")
-                    .font(.caption)
-                    .foregroundColor(.gray)
-                    .italic()
-                
-                Spacer()
-                
-                HStack {
-                    Button("Cancel") {
-                        showCustomExercise = false
-                        selectedExercise = "Push-ups"
+                // Show some detected joints if any
+                if !poseEstimator.bodyParts.isEmpty {
+                    Text("Sample Joints:")
+                        .foregroundColor(.green)
+                    let sampleJoints = Array(poseEstimator.bodyParts.prefix(3))
+                    ForEach(sampleJoints, id: \.key) { joint, bodyPart in
+                        Text("  \(joint.rawValue): \(String(format: "%.2f", bodyPart.confidence))")
+                            .font(.caption2)
                     }
-                    .foregroundColor(.red)
-                    
-                    Spacer()
-                    
-                    Button("Start Analysis") {
-                        selectedExercise = customExerciseName.isEmpty ? "Custom Exercise" : customExerciseName
-                        showCustomExercise = false
-                    }
-                    .disabled(customExerciseName.isEmpty || customExerciseDescription.isEmpty)
-                    .foregroundColor(.blue)
                 }
-                .padding()
+                
+                // Analysis Status
+                Text("Analysis Service: \(analysisService.isAnalyzing ? "🔄 Active" : "⏸️ Idle")")
+                
+                Text("Live Score: \(String(format: "%.1f", analysisService.liveFormScore))")
+                
+                if !analysisService.liveFormFeedback.isEmpty {
+                    Text("Live Feedback: \(analysisService.liveFormFeedback)")
+                        .font(.caption)
+                }
+                
+                // Action Buttons
+                VStack(spacing: 6) {
+                    Button("🧪 Test OpenAI") {
+                        testOpenAIConnection()
+                    }
+                    .buttonStyle(DebugButtonStyle(color: .orange))
+                    
+                    Button("🔴 Force Analysis") {
+                        forceLiveAnalysis()
+                    }
+                    .buttonStyle(DebugButtonStyle(color: .red))
+                    
+                    Button("📷 Check Camera") {
+                        checkCameraPermissions()
+                    }
+                    .buttonStyle(DebugButtonStyle(color: .blue))
+                }
             }
-            .padding()
-            .navigationBarTitleDisplayMode(.inline)
+            .font(.caption)
+            .foregroundColor(.white)
+        }
+        .padding()
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.black.opacity(0.9))
+                .shadow(radius: 4)
+        )
+        .padding()
+    }
+    
+    private var apiKeyStatusView: some View {
+        let apiKey = ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? "Not Set"
+        return Text("API Key: \(apiKey == "Not Set" ? "❌ Missing" : "✅ Set (\(apiKey.count) chars)")")
+            .foregroundColor(apiKey == "Not Set" ? .red : .green)
+    }
+    
+    // MARK: - Helper Functions
+    
+    private func forceLiveAnalysis() {
+        print("🔴 DEBUG: Force live analysis button pressed")
+        print("🔴 DEBUG: Current body parts count: \(poseEstimator.bodyParts.count)")
+        
+        // Manually add current frame to analysis service
+        analysisService.addFrame(from: poseEstimator)
+        
+        // Force immediate analysis
+        Task {
+            await analysisService.performLiveAnalysis()
+        }
+    }
+    
+    private func testOpenAIConnection() {
+        Task {
+            let testData = "t:0.0|ls:0.3,0.4|rs:0.7,0.4|n:0.5,0.2"
+            let openAIService = OpenAIService()
+            
+            print("🧪 Testing OpenAI with sample data...")
+            let result = await openAIService.analyzeExercise(exercise: "Test", coordinateData: testData)
+            print("🧪 Test result: \(result)")
+        }
+    }
+    
+    private func checkCameraPermissions() {
+        let status = AVCaptureDevice.authorizationStatus(for: .video)
+        print("🎥 Camera permission status: \(status.rawValue)")
+        
+        switch status {
+        case .authorized:
+            print("✅ Camera access authorized")
+        case .denied:
+            print("❌ Camera access denied")
+        case .restricted:
+            print("⚠️ Camera access restricted")
+        case .notDetermined:
+            print("❓ Camera access not determined")
+            AVCaptureDevice.requestAccess(for: .video) { granted in
+                print("🎥 Camera access granted: \(granted)")
+            }
+        @unknown default:
+            print("❓ Unknown camera status")
         }
     }
     
     // MARK: - Computed Properties
-    
-    private var displayExerciseName: String {
-        selectedExercise == "Custom Exercise..." ? "Custom Exercise" : selectedExercise
-    }
     
     private var liveScoreColor: Color {
         switch analysisService.liveFormScore {
@@ -279,13 +359,7 @@ struct ContentView: View {
         if isRecording {
             isRecording = false
             Task {
-                if selectedExercise.contains("Custom") && !customExerciseDescription.isEmpty {
-                    // Use custom exercise analysis
-                    await performCustomExerciseAnalysis()
-                } else {
-                    // Use standard exercise analysis
-                    await analysisService.analyzeExercise(exercise: selectedExercise)
-                }
+                await analysisService.analyzeExercise(exercise: selectedExercise)
             }
         } else {
             analysisService.startNewSession()
@@ -293,11 +367,28 @@ struct ContentView: View {
         }
     }
     
-    private func performCustomExerciseAnalysis() async {
-        let exerciseName = customExerciseName.isEmpty ? "Custom Exercise" : customExerciseName
+    private func toggleCamera() {
+        let newPosition: AVCaptureDevice.Position = cameraPosition == .front ? .back : .front
+        cameraPosition = newPosition
         
-        // Since we need to modify OpenAIService to support custom analysis,
-        // for now we'll use the standard analysis with the custom exercise name
-        await analysisService.analyzeExercise(exercise: "\(exerciseName): \(customExerciseDescription)")
+        // Post notification for camera switch
+        NotificationCenter.default.post(name: .switchCamera, object: newPosition)
+        print("Sthrenotics: Camera toggle requested - \(newPosition == .front ? "front" : "back")")
+    }
+}
+
+// MARK: - Custom Button Style for Debug Buttons
+
+struct DebugButtonStyle: ButtonStyle {
+    let color: Color
+    
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(color.opacity(0.8))
+            .foregroundColor(.white)
+            .cornerRadius(6)
+            .scaleEffect(configuration.isPressed ? 0.95 : 1.0)
     }
 }

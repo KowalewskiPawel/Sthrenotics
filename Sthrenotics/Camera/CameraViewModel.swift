@@ -1,8 +1,8 @@
 //
 //  CameraViewModel.swift
-//  FormForgeV2
+//  Sthrenotics
 //
-//  Created by Pawel Kowalewski on 09/05/2025.
+//  Enhanced with camera switching functionality
 //
 
 import Foundation
@@ -12,6 +12,8 @@ import Combine
 
 class CameraViewModel: ObservableObject {
     @Published var currentFrame: CGImage?
+    @Published var currentCameraPosition: AVCaptureDevice.Position = .front
+    
     private let poseEstimator: PoseEstimator
     
     var captureSession: AVCaptureSession?
@@ -21,14 +23,82 @@ class CameraViewModel: ObservableObject {
     
     private var isConfigured = false
     private var cancellables = Set<AnyCancellable>()
+    private var currentCameraInput: AVCaptureDeviceInput?
     
     init(poseEstimator: PoseEstimator) {
         self.poseEstimator = poseEstimator
         setupSession()
+        
+        // Listen for camera switch notifications
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(switchCameraNotification(_:)),
+            name: .switchCamera,
+            object: nil
+        )
     }
     
     deinit {
         stopSession()
+        NotificationCenter.default.removeObserver(self)
+    }
+    
+    @objc private func switchCameraNotification(_ notification: Notification) {
+        if let position = notification.object as? AVCaptureDevice.Position {
+            switchCamera(to: position)
+        }
+    }
+    
+    func switchCamera(to position: AVCaptureDevice.Position) {
+        sessionQueue.async { [weak self] in
+            self?.performCameraSwitch(to: position)
+        }
+    }
+    
+    private func performCameraSwitch(to position: AVCaptureDevice.Position) {
+        guard let session = captureSession else { return }
+        
+        session.beginConfiguration()
+        
+        // Remove current input
+        if let currentInput = currentCameraInput {
+            session.removeInput(currentInput)
+        }
+        
+        // Add new camera input
+        guard let camera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position) else {
+            print("Failed to get camera for position: \(position)")
+            session.commitConfiguration()
+            return
+        }
+        
+        do {
+            let newInput = try AVCaptureDeviceInput(device: camera)
+            
+            if session.canAddInput(newInput) {
+                session.addInput(newInput)
+                currentCameraInput = newInput
+                
+                // Update connection settings
+                if let connection = videoOutput.connection(with: .video) {
+                    connection.videoOrientation = .portrait
+                    connection.isVideoMirrored = (position == .front)
+                }
+                
+                // Update published property on main thread
+                DispatchQueue.main.async {
+                    self.currentCameraPosition = position
+                }
+                
+                print("Successfully switched to \(position == .front ? "front" : "back") camera")
+            } else {
+                print("Could not add new camera input")
+            }
+        } catch {
+            print("Failed to create camera input: \(error.localizedDescription)")
+        }
+        
+        session.commitConfiguration()
     }
     
     func setupSession() {
@@ -50,7 +120,7 @@ class CameraViewModel: ObservableObject {
         // Set quality level
         session.sessionPreset = .high
         
-        // Camera Input
+        // Camera Input (start with front camera)
         guard let camera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front) else {
             print("Failed to get front camera")
             return
@@ -61,6 +131,7 @@ class CameraViewModel: ObservableObject {
             
             if session.canAddInput(input) {
                 session.addInput(input)
+                currentCameraInput = input
             } else {
                 print("Could not add camera input")
                 return
@@ -85,7 +156,7 @@ class CameraViewModel: ObservableObject {
         // Get connection and set orientation
         if let connection = videoOutput.connection(with: .video) {
             connection.videoOrientation = .portrait
-            connection.isVideoMirrored = true
+            connection.isVideoMirrored = true // Start with front camera mirrored
         }
         
         session.commitConfiguration()
@@ -98,26 +169,14 @@ class CameraViewModel: ObservableObject {
     }
     
     private func setupFrameCallback() {
-        // This assumes you have a way to get frames from the pose estimator
-        // You might need to modify PoseEstimator to expose frames
         NotificationCenter.default.publisher(for: .newCameraFrame)
             .compactMap { notification -> CGImage? in
-                // Explicitly check if the object is a CGImage using CFGetTypeID
                 guard let imageObject = notification.object else { return nil }
-
-                // Use the modern CGImage.typeID property
                 let imageTypeID = CGImage.typeID
-
                 guard CFGetTypeID(imageObject as CFTypeRef) == imageTypeID else {
-                    // Optional: Log a warning if the object is not the expected type
                     print("Received unexpected object type for .newCameraFrame notification.")
                     return nil
                 }
-
-                // Now that we've confirmed the type using CFGetTypeID,
-                // we can confidently force cast. The compiler no longer
-                // warns about the conditional downcast always succeeding
-                // because the type is verified by the guard statement.
                 return imageObject as! CGImage
             }
             .receive(on: DispatchQueue.main)
@@ -144,7 +203,8 @@ class CameraViewModel: ObservableObject {
     }
 }
 
-// Notification name for new camera frames
+// Add notification for camera switching
 extension Notification.Name {
     static let newCameraFrame = Notification.Name("newCameraFrame")
+    static let switchCamera = Notification.Name("switchCamera")
 }
